@@ -18,17 +18,24 @@ export const cipherMap = {
 };
 
 const vowels = ["A", "E", "I", "O", "U"];
+const prefixes = ["(C)", "<V>"];
+const suffix = "#L";
+const vowelMarker = "~";
 
-// --- HELPER: Create Reverse Map for Decryption ---
+// --- HELPER: Build a list of ALL valid tokens (Symbols + Tags) ---
+// We need this for the Decryptor to know what a "symbol" is.
+// We sort by length (descending) so we match longest symbols first (e.g. '[-]' before '-')
+const validTokens = [
+  suffix, ...prefixes, vowelMarker,
+  ...Object.values(cipherMap)
+].sort((a, b) => b.length - a.length);
+
+// Reverse Map for Decryption
 const reverseMap = {};
-Object.entries(cipherMap).forEach(([key, value]) => {
-  reverseMap[value] = key;
-});
-// Sort symbols by length (descending) to match multi-char symbols (like '[-]') first
-const sortedSymbols = Object.keys(reverseMap).sort((a, b) => b.length - a.length);
+Object.entries(cipherMap).forEach(([k, v]) => reverseMap[v] = k);
 
 
-// 2. ENCRYPTION FUNCTION
+// 2. ENCRYPTION FUNCTION (Updated for Atomic Reversal)
 export function encryptText(inputText) {
   if (!inputText) return "";
 
@@ -36,81 +43,83 @@ export function encryptText(inputText) {
     const cleanWord = word.toUpperCase().replace(/[^A-Z]/g, "");
     if (cleanWord.length === 0) return word;
 
-    // Rule 1: Prefix
-    const firstChar = cleanWord[0];
-    const isVowelStart = vowels.includes(firstChar);
-    const prefix = isVowelStart ? "<V>" : "(C)";
+    // Step 1: Build an ARRAY of parts (Tokens), not a string
+    let parts = [];
 
-    // Rule 2: Substitution + Vowel Markers
-    let transformedBody = "";
+    // Prefix
+    const isVowelStart = vowels.includes(cleanWord[0]);
+    parts.push(isVowelStart ? "<V>" : "(C)");
+
+    // Body Substitution
     for (let char of cleanWord) {
-      const mappedChar = cipherMap[char] || char;
-      transformedBody += mappedChar;
+      parts.push(cipherMap[char] || char); // Add symbol as a single unit
       if (vowels.includes(char)) {
-        transformedBody += "~";
+        parts.push(vowelMarker); // Add marker as a single unit
       }
     }
 
-    // Rule 3: Length Tag
-    const lengthTag = cleanWord.length >= 5 ? "#L" : "";
+    // Length Tag
+    if (cleanWord.length >= 5) parts.push("#L");
 
-    // Rule 4: Assemble & Reverse
-    const fullString = prefix + transformedBody + lengthTag;
-    return fullString.split("").reverse().join("");
+    // Step 2: Reverse the ARRAY
+    // This reverses the ORDER but keeps the SYMBOLS intact.
+    // Ex: ["(C)", "()", "0", "~"] -> ["~", "0", "()", "(C)"]
+    // Result String: "~0()(C)" (Notice N is still () and not )()
+    return parts.reverse().join("");
   }).join(" ");
 }
 
 
-// 3. DECRYPTION FUNCTION (NEW!)
+// 3. DECRYPTION FUNCTION (Updated for Token Parsing)
 export function decryptText(encryptedText) {
   if (!encryptedText) return "";
 
   return encryptedText.split(" ").map(word => {
     if (!word) return "";
-
-    // Step 1: Reverse back to normal order
-    // e.g. "L#~0££~3[-](C)" -> "(C)[-]3~££0~#L"
-    let processed = word.split("").reverse().join("");
-
-    // Step 2: Remove Length Tag (#L) if present
-    if (processed.endsWith("#L")) {
-      processed = processed.slice(0, -2);
+    
+    // Step 1: Tokenize the string
+    // We must break the string "~0()(C)" back into ["~", "0", "()", "(C)"]
+    let tokens = [];
+    let remaining = word;
+    
+    while (remaining.length > 0) {
+      // Find the matching token (Greedy match longest first)
+      let match = validTokens.find(t => remaining.startsWith(t));
+      
+      if (match) {
+        tokens.push(match);
+        remaining = remaining.slice(match.length);
+      } else {
+        // Fallback for unknown chars (just take 1 char)
+        tokens.push(remaining[0]);
+        remaining = remaining.slice(1);
+      }
     }
 
-    // Step 3: Remove Prefix ((C) or <V>)
-    if (processed.startsWith("(C)")) {
-      processed = processed.slice(3);
-    } else if (processed.startsWith("<V>")) {
-      processed = processed.slice(3);
+    // Step 2: Reverse Tokens back to Forward Order
+    // ["~", "0", "()", "(C)"] -> ["(C)", "()", "0", "~"]
+    let forwardParts = tokens.reverse();
+
+    // Step 3: Remove Tags
+    // Remove Prefix (First item)
+    if (prefixes.includes(forwardParts[0])) {
+      forwardParts.shift();
+    }
+    // Remove Suffix (Last item)
+    if (forwardParts[forwardParts.length - 1] === suffix) {
+      forwardParts.pop();
     }
 
-    // Step 4: Decode Symbols
+    // Step 4: Decode Body
     let result = "";
-    let i = 0;
-    while (i < processed.length) {
-      let matchFound = false;
+    for (let part of forwardParts) {
+      // Skip Vowel Marker (We don't need it to know the letter)
+      if (part === vowelMarker) continue;
 
-      // Try to match the longest symbols first (e.g. '[-]' before '[')
-      for (const symbol of sortedSymbols) {
-        if (processed.startsWith(symbol, i)) {
-          result += reverseMap[symbol]; // Convert symbol back to letter
-          i += symbol.length;
-          matchFound = true;
-
-          // Skip the Vowel Marker (~) if it exists immediately after
-          if (processed[i] === "~") {
-            i++; 
-          }
-          break;
-        }
-      }
-
-      // If no symbol matched (e.g. spaces or unknown chars), just keep it
-      if (!matchFound) {
-        result += processed[i];
-        i++;
-      }
+      // Map back to letter
+      result += reverseMap[part] || part;
     }
+
     return result;
   }).join(" ");
 }
